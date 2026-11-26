@@ -88,10 +88,14 @@ Read this before the feature list.
 ```bash
 git clone https://github.com/ramsterr/RELAY_context
 cd RELAY_context
-pip install -e .
+pip install -e .            # library
+pip install -e ".[mcp]"     # library + the MCP server
 ```
 
-Optional extras:
+The plugin needs the `mcp` extra; the library does not. If you run `relay-mcp`
+without it you get one line telling you the command above, not a traceback.
+
+Other extras:
 
 ```bash
 pip install -e ".[chroma]"         # persistent vector backend
@@ -99,7 +103,8 @@ pip install -e ".[qdrant]"         # production vector backend
 pip install -e ".[observability]"  # langfuse + opentelemetry
 ```
 
-The core install is enough for the plugin. It does not need a database.
+A bare install needs no database: `create_backend()` falls back to the in-memory
+backend and says so. Pass `strict=True` when a silent fallback would be a bug.
 
 ---
 

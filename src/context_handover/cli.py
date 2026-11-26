@@ -124,7 +124,11 @@ def cmd_reset(args) -> int:
 
 
 def cmd_mcp(args) -> int:
-    from .mcp.server import main as server_main
+    try:
+        from .mcp.server import main as server_main
+    except ImportError:
+        print('the MCP server needs the optional SDK: pip install "context-handover[mcp]"', file=sys.stderr)
+        return 2
 
     argv = []
     if args.state_dir:

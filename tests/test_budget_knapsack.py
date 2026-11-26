@@ -129,3 +129,16 @@ class TestHandoverPackage:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_strict_backend_raises_when_the_extra_is_missing():
+    from context_handover.storage.vector_store import create_backend
+
+    try:
+        import chromadb  # noqa: F401
+    except ImportError:
+        import pytest
+
+        with pytest.raises(ImportError):
+            create_backend("chroma", strict=True)
+        assert type(create_backend("chroma")).__name__ == "InMemoryBackend"

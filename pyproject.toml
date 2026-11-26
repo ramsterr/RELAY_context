@@ -30,10 +30,12 @@ dependencies = [
     "openai>=1.0.0",
     "scipy>=1.10.0",
     "scikit-learn>=1.3.0",
-    "mcp>=2.0.0",
 ]
 
 [project.optional-dependencies]
+# Needed to run the MCP server (`relay-mcp`). The library itself does not
+# import it, so `pip install context-handover` stays free of the SDK.
+mcp = ["mcp>=2.0.0"]
 chroma = ["chromadb>=0.4.0"]
 qdrant = ["qdrant-client>=1.7.0"]
 observability = [
@@ -52,6 +54,7 @@ dev = [
     "mypy>=1.5.0",
 ]
 all = [
+    "mcp>=2.0.0",
     "chromadb>=0.4.0",
     "qdrant-client>=1.7.0",
     "langfuse>=2.0.0",

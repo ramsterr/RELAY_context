@@ -398,16 +398,19 @@ class InMemoryBackend:
 
 def create_backend(
     backend_type: str = "chroma",
+    strict: bool = False,
     **kwargs
 ) -> VectorStoreBackend:
     """
     Factory function to create vector store backend.
     
     Args:
-        backend_type: One of 'chroma', 'qdrant', 'memory'. The persistent
-            backends need an optional dependency; when it is missing this falls
-            back to the in-memory backend with a warning, so importing the
-            library never requires a database.
+        backend_type: One of 'chroma', 'qdrant', 'memory'.
+        strict: When True, a missing optional dependency raises ImportError
+            instead of falling back. Use it when silently getting an
+            in-memory store would be a bug, such as persistence you rely on.
+            The default is to fall back and warn, so importing the library
+            never requires a database.
         **kwargs: Backend-specific arguments
     
     Returns:
@@ -428,7 +431,7 @@ def create_backend(
     try:
         return backends[backend_type](**kwargs)
     except ImportError as exc:
-        if backend_type == "memory":
+        if strict or backend_type == "memory":
             raise
         logger.warning(
             "%s backend unavailable (%s); using the in-memory backend. "

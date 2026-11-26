@@ -163,3 +163,28 @@ def test_tool_handover_returns_a_context_block(store):
 
     assert payload["ok"] is True
     assert "[decision] use RS256" in payload["context"]
+
+
+def test_total_tokens_splits_into_text_and_overhead(store):
+    store.remember("decision", "use RS256")
+    package = store.handover(max_tokens=400)
+    assert package.total_tokens == package.text_tokens + package.overhead_tokens
+    assert package.overhead_tokens == 15 * len(package.selected_atoms)
+    assert package.total_tokens <= 400
+
+
+def test_missing_sdk_raises_a_usable_error(monkeypatch):
+    from context_handover.mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "MCP_AVAILABLE", False)
+    with pytest.raises(RuntimeError) as excinfo:
+        server_module.build_server(store=object())
+    assert "context-handover[mcp]" in str(excinfo.value)
+
+
+def test_server_main_without_sdk_exits_two(monkeypatch, capsys):
+    from context_handover.mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "MCP_AVAILABLE", False)
+    assert server_module.main(["--check"]) == 2
+    assert "context-handover[mcp]" in capsys.readouterr().err

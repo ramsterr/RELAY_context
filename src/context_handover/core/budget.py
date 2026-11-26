@@ -310,7 +310,14 @@ class HandoverPackage:
         self.budget_manager = budget_manager
         self.max_tokens = max_tokens
         self.selected_atoms: list = []
+        #: Tokens the handover actually spends, including the per-atom prefix
+        #: overhead. This is the number to compare against ``max_tokens``.
         self.total_tokens: int = 0
+        #: Content tokens only. Smaller than ``total_tokens`` by exactly
+        #: ``overhead_tokens``; kept so the two are never conflated.
+        self.text_tokens: int = 0
+        #: The difference between the two numbers above.
+        self.overhead_tokens: int = 0
 
     def build(self, use_knapsack: bool = True) -> list:
         """
@@ -324,10 +331,11 @@ class HandoverPackage:
         self.selected_atoms = self.budget_manager.fit_atoms_to_budget(
             ranked, self.max_tokens, use_knapsack=use_knapsack
         )
-        self.total_tokens = sum(
-            self.budget_manager.count(a.content) + ATOM_OVERHEAD
-            for a in self.selected_atoms
+        self.text_tokens = sum(
+            self.budget_manager.count(a.content) for a in self.selected_atoms
         )
+        self.overhead_tokens = ATOM_OVERHEAD * len(self.selected_atoms)
+        self.total_tokens = self.text_tokens + self.overhead_tokens
         return self.selected_atoms
 
     def to_context_string(self) -> str:

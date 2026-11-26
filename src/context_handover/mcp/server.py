@@ -28,11 +28,23 @@ import logging
 import sys
 from typing import Optional
 
-from mcp.server.mcpserver import MCPServer
+try:
+    from mcp.server.mcpserver import MCPServer
+    MCP_AVAILABLE = True
+except ImportError:  # the SDK is an extra; the library does not need it
+    MCPServer = None  # type: ignore[assignment]
+    MCP_AVAILABLE = False
 
 from .store import DEFAULT_MAX_TOKENS, RelayStore, StoreError, state_dir
 
 logger = logging.getLogger("context_handover.mcp")
+
+MISSING_SDK = (
+    "the MCP server needs the optional SDK. Install it with:\n"
+    '    pip install "context-handover[mcp]"\n'
+    "then re-run: relay-mcp"
+)
+
 
 INSTRUCTIONS = """\
 RELAY keeps typed memory across agent sessions.
@@ -50,6 +62,8 @@ transcript.
 
 def build_server(store: Optional[RelayStore] = None) -> MCPServer:
     """Construct the server. ``store`` is injectable so tests do not need disk."""
+    if not MCP_AVAILABLE:
+        raise RuntimeError(MISSING_SDK)
     store = store or RelayStore()
     server = MCPServer(
         name="relay",
@@ -226,6 +240,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         stream=sys.stderr,
     )
+
+    if not MCP_AVAILABLE:
+        print(MISSING_SDK, file=sys.stderr)
+        return 2
 
     store = RelayStore(directory=args.state_dir, namespace=args.namespace)
     server = build_server(store)
