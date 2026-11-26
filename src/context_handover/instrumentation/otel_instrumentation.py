@@ -8,12 +8,19 @@ try:
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.exporter.jaeger.thrift import JaegerExporter
     from opentelemetry.sdk.resources import Resource, SERVICE_NAME
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
     logger.warning("opentelemetry not available")
+
+# The Jaeger exporter is optional and deprecated upstream. Keeping it in its own
+# guard means a broken exporter cannot disable tracing altogether.
+try:
+    from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+    JAEGER_AVAILABLE = True
+except ImportError:
+    JAEGER_AVAILABLE = False
 
 
 class ContextInstrumentor:
@@ -29,12 +36,17 @@ class ContextInstrumentor:
         resource = Resource.create({SERVICE_NAME: service_name})
         provider = TracerProvider(resource=resource)
 
-        if jaeger_endpoint:
+        if jaeger_endpoint and JAEGER_AVAILABLE:
             jaeger_exporter = JaegerExporter(
                 endpoint=jaeger_endpoint,
                 insecure=True,
             )
             provider.add_span_processor(BatchSpanProcessor(jaeger_exporter))
+        elif jaeger_endpoint:
+            logger.warning(
+                "jaeger endpoint configured but opentelemetry-exporter-jaeger "
+                "is not installed; spans are created without an exporter"
+            )
 
         trace.set_tracer_provider(provider)
         self.tracer = trace.get_tracer(__name__)

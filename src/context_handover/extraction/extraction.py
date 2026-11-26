@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Any
 import json
 import re
@@ -13,14 +13,16 @@ class AtomCandidate(BaseModel):
     canonical_form: str
     confidence: float = Field(ge=0.0, le=1.0)
 
-    @validator("type")
+    @field_validator("type")
+    @classmethod
     def type_must_be_valid(cls, v):
         valid = {"entity", "decision", "constraint", "question", "task", "belief", "relation"}
         if v not in valid:
             raise ValueError(f"Invalid atom type: {v}")
         return v
 
-    @validator("canonical_form")
+    @field_validator("canonical_form")
+    @classmethod
     def canonical_must_be_short(cls, v):
         if len(v) > 200:
             return v[:200]

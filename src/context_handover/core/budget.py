@@ -3,6 +3,11 @@ from typing import Optional, List, Tuple
 import logging
 logger = logging.getLogger(__name__)
 
+#: Tokens each atom costs beyond its own text: the "- [type] " prefix and
+#: the newline. Selection and reporting must use the same number, or the
+#: reported total looks smaller than the budget it just spent.
+ATOM_OVERHEAD = 15
+
 try:
     import tiktoken
     TIKTOKEN_AVAILABLE = True
@@ -76,7 +81,7 @@ class TokenBudgetManager:
         self,
         ranked_atoms: list,
         token_budget: int,
-        overhead_per_atom: int = 15,
+        overhead_per_atom: int = ATOM_OVERHEAD,
         use_knapsack: bool = True,
     ) -> list:
         """
@@ -86,7 +91,7 @@ class TokenBudgetManager:
             ranked_atoms: List of candidate atoms
             token_budget: Maximum token limit
             overhead_per_atom: Token overhead per atom for formatting
-            use_knapsack: If True, use bounded knapsack optimization; else greedy
+            use_knapsack: If True, use 0/1 knapsack optimization; else greedy
             
         Returns:
             List of selected atoms optimized for value/token ratio
@@ -200,15 +205,16 @@ class TokenBudgetManager:
         overhead: int,
     ) -> list:
         """
-        Bounded knapsack optimization to maximize total semantic value.
-        
-        Uses dynamic programming for optimal selection under token constraint.
-        Time complexity: O(n * W) where n=atoms, W=budget
-        Space complexity: O(W) with space optimization
+        0/1 knapsack: each atom is taken or not, once. There are no copies of
+        an item to bound, so this is the 0/1 formulation, not the bounded one.
+
+        Time complexity: O(n * W) where n=atoms, W=budget.
+        Space complexity: O(n * W) for the decision table, which is what makes
+        the reconstruction correct.
         """
         if not atoms:
             return []
-        
+
         # Precompute costs and values
         items = []
         for atom in atoms:
@@ -216,66 +222,81 @@ class TokenBudgetManager:
             if cost <= budget:  # Filter out atoms that exceed budget alone
                 value = self._compute_atom_value(atom)
                 items.append((atom, cost, value))
-        
+
         if not items:
             return []
-        
+
+        # Cap the DP width so a multi-million-token budget does not allocate a
+        # multi-million-entry table. Scaling down costs can admit a set that
+        # overflows the real budget, so the selection is repaired below.
+        dp_capacity = min(budget, 10000)
+        scale = budget / dp_capacity
+        scaled = [
+            (atom, max(1, int(cost / scale)), value)
+            for atom, cost, value in items
+        ]
+
+        selected = [scaled[i][0] for i in self._solve_01(scaled, dp_capacity)]
+        if scale > 1.0:
+            selected = self._repair_to_budget(selected, items, budget)
+        return selected
+
+    @staticmethod
+    def _solve_01(items: list, capacity: int) -> list:
+        """Exact 0/1 knapsack selection, returning item indices.
+
+        Reconstruction reads a decision table, one row per item. A single
+        parent pointer per capacity state is not enough: every later item that
+        improves the same state overwrites it, so the parent chain walks into a
+        state it never visited and terminates early. The result is feasible and
+        much worse than the optimum, which is why nothing crashed.
+        """
         n = len(items)
-        
-        # For large budgets, use scaling approximation to avoid memory issues
-        if budget > 10000:
-            scale_factor = budget / 10000
-            scaled_budget = 10000
-            scaled_costs = [int(cost / scale_factor) for _, cost, _ in items]
-            scaled_budget_int = int(scaled_budget)
-            
-            # DP with scaled costs
-            dp = [0.0] * (scaled_budget_int + 1)
-            parent = [-1] * (scaled_budget_int + 1)
-            item_idx = [-1] * (scaled_budget_int + 1)
-            
-            for i, (atom, cost, value) in enumerate(items):
-                scaled_cost = scaled_costs[i]
-                if scaled_cost == 0:
-                    scaled_cost = 1
-                
-                for w in range(scaled_budget_int, scaled_cost - 1, -1):
-                    if dp[w - scaled_cost] + value > dp[w]:
-                        dp[w] = dp[w - scaled_cost] + value
-                        parent[w] = w - scaled_cost
-                        item_idx[w] = i
-            
-            # Backtrack to find selected items
-            selected_indices = set()
-            w = scaled_budget_int
-            while w > 0 and item_idx[w] != -1:
-                idx = item_idx[w]
-                selected_indices.add(idx)
-                w = parent[w]
-            
-            return [items[i][0] for i in selected_indices]
-        
-        # Standard DP for smaller budgets
-        dp = [0.0] * (budget + 1)
-        parent = [-1] * (budget + 1)
-        item_idx = [-1] * (budget + 1)
-        
-        for i, (atom, cost, value) in enumerate(items):
-            for w in range(budget, cost - 1, -1):
-                if dp[w - cost] + value > dp[w]:
-                    dp[w] = dp[w - cost] + value
-                    parent[w] = w - cost
-                    item_idx[w] = i
-        
-        # Backtrack to find selected items
-        selected_indices = set()
-        w = budget
-        while w > 0 and item_idx[w] != -1:
-            idx = item_idx[w]
-            selected_indices.add(idx)
-            w = parent[w]
-        
-        return [items[i][0] for i in selected_indices]
+        dp = [0.0] * (capacity + 1)
+        keep = [bytearray(capacity + 1) for _ in range(n)]
+
+        for i, (_, cost, value) in enumerate(items):
+            taken = keep[i]
+            for w in range(capacity, cost - 1, -1):
+                candidate = dp[w - cost] + value
+                if candidate > dp[w]:
+                    dp[w] = candidate
+                    taken[w] = 1
+
+        selected = []
+        w = capacity
+        for i in range(n - 1, -1, -1):
+            if keep[i][w]:
+                selected.append(i)
+                w -= items[i][1]
+        selected.reverse()
+        return selected
+
+    @staticmethod
+    def _repair_to_budget(selected: list, items: list, budget: int) -> list:
+        """Make a scaled-cost selection fit the real budget, then refill it."""
+        cost_of = {id(atom): cost for atom, cost, _ in items}
+        value_of = {id(atom): value for atom, _, value in items}
+
+        chosen = sorted(
+            selected,
+            key=lambda atom: value_of[id(atom)] / cost_of[id(atom)],
+            reverse=True,
+        )
+        total = sum(cost_of[id(atom)] for atom in chosen)
+        while chosen and total > budget:
+            total -= cost_of[id(chosen.pop())]
+
+        picked = {id(atom) for atom in chosen}
+        for atom, cost, value in sorted(
+            items, key=lambda item: item[2] / item[1], reverse=True
+        ):
+            if id(atom) in picked or total + cost > budget:
+                continue
+            chosen.append(atom)
+            picked.add(id(atom))
+            total += cost
+        return chosen
 
 
 class HandoverPackage:
@@ -296,7 +317,7 @@ class HandoverPackage:
         Build the handover package with optimized atom selection.
         
         Args:
-            use_knapsack: If True (default), use bounded knapsack optimization.
+            use_knapsack: If True (default), use 0/1 knapsack optimization.
                          If False, use faster greedy selection.
         """
         ranked = sorted(self.atoms, key=lambda a: a.propagation_score, reverse=True)
@@ -304,7 +325,8 @@ class HandoverPackage:
             ranked, self.max_tokens, use_knapsack=use_knapsack
         )
         self.total_tokens = sum(
-            self.budget_manager.count(a.content) for a in self.selected_atoms
+            self.budget_manager.count(a.content) + ATOM_OVERHEAD
+            for a in self.selected_atoms
         )
         return self.selected_atoms
 

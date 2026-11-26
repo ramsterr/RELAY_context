@@ -1,462 +1,253 @@
+# RELAY
 
-
-![Context Handover Banner](docs/assets/a3206414-85a6-4b20-9c4a-c81bcba3df12_image%20(1)%20(1).png)
-
-<div align="center">
-
-# Context Handover
-
-**Preserve Semantic Continuity Across LLM Session Boundaries.**
-
-[![Python Version](https://img.shields.io/badge/python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-0877d2?style=for-the-badge)](LICENSE)
-[![Status](https://img.shields.io/badge/status-production--ready-success?style=for-the-badge)]()
-[![Quality Score](https://img.shields.io/badge/quality-8.9/10-f39c12?style=for-the-badge)]()
-
-</div>
+Memory for an agent that outlives its context window.
 
 ---
 
-> **💡 The Problem:** LLMs forget everything when a session ends. Standard memory is either too dumb (linear history) or too expensive (full vector re-indexing).
->
-> **✅ The Solution:** `context_handover` extracts **Semantic Atoms**, measures **Context Drift**, and optimally packs context into new sessions using a **Bounded Knapsack Algorithm**.
+## The one thing to understand
 
----
+RELAY does not keep everything. Nothing that fits in a token budget can.
 
-<div align="center">
+What it promises is narrower, and more useful: **nothing leaves quietly.**
 
-### Core Capabilities
+A summary drops a constraint and says nothing. You find out in production.
+RELAY drops a constraint and tells you it did, by name and by type, in the same
+call that produced the handover:
 
-| 🔍 **Semantic Extraction** | 📊 **Drift Detection** | 🎯 **Smart Packing** |
-|:---:|:---:|:---:|
-| Extract meaningful context units | Measure topic shifts in real-time | Optimize token usage mathematically |
-| **🔗 DAG Tracking** | **🛡️ Enterprise Ready** | **📈 Visual Analytics** |
-| Track dependencies across sessions | Circuit breakers, retries, DLQ | Interactive observability dashboard |
-
-</div>
-
----
-
-## Visual Overview
-
-### How Context Handover Works
-
-```mermaid
-graph LR
-    A[User Chat] --> B[Atom Extractor]
-    B --> C[Atom Registry]
-    C --> D[Vector Store]
-    D --> E[Drift Detector]
-    D --> F[Token Budgeter]
-    E --> G[Loss Ledger]
-    F --> H[New Session]
-    
-    style A fill:#e1f5fe
-    style B fill:#fff3e0
-    style C fill:#f3e5f5
-    style D fill:#e8f5e9
-    style E fill:#ffebee
-    style F fill:#fff8e1
-    style G fill:#fce4ec
-    style H fill:#c8e6c9
+```json
+{
+  "selected": 12,
+  "tokens": 1980,
+  "context": "## Context Atoms\n- [decision] Use RS256 for signing tokens\n- [constraint] Tokens expire after one hour\n...",
+  "dropped": [
+    {"type": "entity", "content": "staging cluster runs in eu-west-1"},
+    {"type": "belief", "content": "the team prefers Postgres"}
+  ]
+}
 ```
 
-### Token Optimization Comparison
-
-<div align="center">
-
-| Approach | Token Efficiency | Semantic Coherence | Latency |
-|:--------:|:----------------:|:------------------:|:-------:|
-| ❌ **Naive Buffer** | Low ⚠️ | Low ⚠️ | Fast ✅ |
-| ⚡ **Vector Recall** | Medium | Medium | Slow ⚠️ |
-| ✅ **Context Handover** | **High** 🎯 | **High** 🎯 | **Fast** ⚡ |
-
-</div>
+That is the whole design. Everything else in this repo exists to make that
+sentence true: typed atoms, so a type can be protected; a packer, so the budget
+is spent on what matters; a ledger, so what was left out is still recorded.
 
 ---
 
-## Quick Start
+## Why the obvious approaches fail
 
-### 1. Installation
+| Approach | What breaks |
+|---|---|
+| Replay the transcript | Cost grows with every turn, and the constraint from hour one is buried 40k tokens back |
+| Summarise it | Unaccountable. The summary may drop "must use RS256" and nobody can tell |
+| Retrieve top-k at each turn | Retrieves what is similar to *now*, so it cannot surface the constraint that nothing resembles yet |
+
+The difference is not compression quality. It is whether you can answer the
+question: *what did the handover leave behind?*
+
+---
+
+## What it does
+
+1. **Typed atoms.** Seven types — decision, constraint, task, question, entity,
+   belief, relation. A type is a policy hook: decisions and constraints are
+   placed outside the optimiser, so they are never traded away for cheap filler.
+2. **Packs under a token budget.** 0/1 knapsack over `value = salience × type
+   weight` and `cost = tokens + 15`. Exact, not greedy: the returned set is the
+   optimum for that budget, verified against brute force in the tests.
+3. **Reports the loss.** Every atom that did not fit is returned and stored with
+   the handover that dropped it.
+4. **Measures drift.** Jaccard over the atoms that survived versus the previous
+   handover, fused with a structural KL over atom types.
+
+---
+
+## What it does not do
+
+Read this before the feature list.
+
+- **It is not lossless.** The budget is finite, so atoms are always left out.
+  The guarantee is that you are told which ones.
+- **A dropped atom is not recoverable from RELAY.** It is recorded, not stored
+  as text. Keep the transcript if you need the original wording.
+- **It is not RAG.** There is no semantic search over history and no embedding
+  index in the default path.
+- **Deduplication is by canonical form, not meaning.** The same fact phrased two
+  different ways becomes two atoms unless the extractor normalises it the same
+  way twice.
+- **The weights are hand-set priors**, not learned. They encode a belief about
+  what matters in a handover. Fitting them is future work.
+- **Value is unconditional.** The packer picks the most valuable atoms overall,
+  not the ones relevant to what you are about to do next.
+- **Extraction quality depends on the extractor.** With an API key it is a
+  model; without one it is four regex patterns. `relay_remember` beats both when
+  the agent already knows what it just decided.
+
+---
+
+## Install
+
 ```bash
-pip install context-handover
-# Optional: For visualizations and vector backends
-pip install context-handover[viz,vector]
+git clone https://github.com/ramsterr/RELAY_context
+cd RELAY_context
+pip install -e .
 ```
 
-### 2. Hello World
-```python
-from context_handover import SessionManager, SemanticAtom
+Optional extras:
 
-# Initialize manager
-manager = SessionManager(session_id="session_001")
-
-# Add a meaningful interaction
-manager.add_message(
-    role="user", 
-    content="I want to build a rocket engine using methane."
-)
-manager.add_message(
-    role="assistant", 
-    content="Understood. Methane (CH4) offers high specific impulse..."
-)
-
-# Extract atoms automatically
-atoms = manager.extract_atoms() 
-print(f"Extracted {len(atoms)} semantic atoms.")
-
-# Handover to a new session (preserving context)
-new_session_pkg = manager.build_handover_package()
-manager.handover_to_new_session("session_002", new_session_pkg)
-```
-
-### 3. Visualize Your Context
-See your context flow, drift, and missing gaps in real-time:
 ```bash
-# Launch the interactive dashboard
-streamlit run context_observatory.py
+pip install -e ".[chroma]"         # persistent vector backend
+pip install -e ".[qdrant]"         # production vector backend
+pip install -e ".[observability]"  # langfuse + opentelemetry
 ```
-*(Opens a local web dashboard at http://localhost:8501)*
+
+The core install is enough for the plugin. It does not need a database.
 
 ---
 
-## How It Works
+## Use it as an agent plugin
 
-Unlike linear buffers, we treat context as a **Directed Acyclic Graph (DAG)** of semantic units.
+RELAY ships an MCP server. Any MCP host can call it; these tools then appear to
+the agent as `mcp__relay__<tool>`.
 
-### The Architecture Flow
+```bash
+# Wombat
+wombat mcp add relay -- relay-mcp
 
-```mermaid
-flowchart TD
-    subgraph Input["Input Layer"]
-        A[User Chat<br/>Raw Text]
-    end
-    
-    subgraph Processing["Processing Layer"]
-        B[Atom Extractor<br/>LLM + Regex]
-        C[Atom Registry<br/>Dedup + Embed]
-        D[Vector Store<br/>Chroma/Qdrant]
-    end
-    
-    subgraph Optimization["Optimization Layer"]
-        E[Drift Detector<br/>KL + Cosine]
-        F[Token Budgeter<br/>Knapsack Algo]
-    end
-    
-    subgraph Output["Output Layer"]
-        G[Loss Ledger<br/>Audit Trail]
-        H[New Session<br/>Optimized Prompt]
-    end
-    
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    D --> F
-    E --> G
-    F --> H
-    
-    style Input fill:#e3f2fd
-    style Processing fill:#fff3e0
-    style Optimization fill:#f3e5f5
-    style Output fill:#e8f5e9
+# check it
+wombat mcp test relay
 ```
-
-### Key Concepts
-
-<div align="center">
-
-| Concept | Description | Analogy | Visual |
-|:---|:---|:---|:---:|
-| **Semantic Atom** | Smallest unit of meaningful context | A single Lego brick | 🔷 |
-| **Session DAG** | Tracks atom relationships across sessions | Family tree for chat | 🌳 |
-| **Drift Metric** | Measures topic change since last handover | Compass checking course | 🧭 |
-| **Knapsack Budget** | Selects most valuable atoms for token limit | Packing a suitcase | 🎒 |
-
-</div>
-
-### Semantic Atom Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Manager
-    participant Extractor
-    participant Registry
-    participant Vector
-    
-    User->>Manager: Add Message
-    Manager->>Extractor: Trigger Extraction
-    Extractor->>Extractor: Parse LLM + Regex
-    Extractor->>Registry: Submit Atoms
-    Registry->>Registry: Deduplicate
-    Registry->>Vector: Generate Embeddings
-    Vector-->>Manager: Confirmation
-    Manager-->>User: Done
-```
-
----
-
-## Visualization Dashboard
-
-Don't fly blind. Use our built-in **Context Observatory** to debug and monitor your agent's memory.
-
-### What You Can See
-
-1.  **Session DAG Map**: Interactive graph of atom dependencies.
-2.  **Drift Thermometer**: Real-time gauge of semantic shift.
-3.  **Token Knapsack**: Visualizes which atoms were kept vs. dropped due to budget.
-4.  **Semantic Space**: 2D clustering of your conversation topics.
-5.  **Integrity Gaps**: Heatmap showing missing data or broken dependencies.
-
-### Dashboard Preview
 
 ```text
-+---------------------------------------------------------------+
-|  CONTEXT OBSERVATORY  [Session: 8a7f...]           [Refresh]  |
-+---------------------------------------------------------------+
-|  [DAG MAP]        |  [DRIFT METRICS]      |  [TOKEN BUDGET]   |
-|                   |                       |                   |
-|    (O) Fact       |   Gauge: 0.23 (OK)    |   Used: 3.2k/4k   |
-|     | \           |   Trend: ↗ Rising     |                   |
-|    (D) Dec ---->  |   [||||||....]        |   [####][  ][#]   |
-|     |   \         |                       |   Kept  Dropped   |
-|    (C) Con        |   KL: 0.12            |                   |
-|                   |   Jaccard: 0.45       |                   |
-+-------------------+-----------------------+-------------------+
-|  [SEMANTIC SPACE]                 |  [INTEGRITY GAPS]         |
-|                                   |                           |
-|      *   *   (Cluster A)          |   Time ▶                  |
-|         *                         |   Topic 1 [||||||] OK     |
-|   (Cluster B) *   *               |   Topic 2 [||....] GAP!   |
-|                                   |   Topic 3 [||||||] OK     |
-+-----------------------------------+---------------------------+
+✓ relay            8 tools
+    relay_remember     Remember one fact that must survive this session.
+    relay_capture      Extract atoms from raw transcript text.
+    relay_atoms        List what is currently remembered.
+    relay_handover     Pack the context atoms into a block for the next session.
+    relay_drift        How far the context has moved since the last handover.
+    relay_losses       What the last handover left behind, by name.
+    relay_new_session  End this session and start the next one.
+    relay_status       Where state lives and what is in it.
 ```
 
+State lives in `RELAY_STATE_DIR` (default `~/.relay`), one file per workspace
+namespace, so two projects never share memory. Point the server at a different
+location with `wombat mcp add relay --env RELAY_STATE_DIR=/path -- relay-mcp`.
 
-## Production Features
+### The loop the agent should run
 
-<div align="center">
-
-| Feature | Description | Status |
-|:---|:---|:---:|
-| **🔄 Idempotency** | Duplicate events auto-detected & ignored | ✅ Active |
-| **🔁 Smart Retries** | Exponential backoff for LLM/Redis failures | ✅ Active |
-| **⚡ Circuit Breakers** | Prevents cascading failures | ✅ Active |
-| **📦 Dead Letter Queue** | Failed events saved for replay | ✅ Active |
-| **🔒 PII Ready** | Redaction & encryption hooks | 🔧 Configurable |
-
-</div>
+```text
+start of session   → relay_handover            put the block in context
+during the session → relay_remember            one call per decision/constraint
+end of session     → relay_new_session         pack, archive, start clean
+when curious       → relay_losses, relay_drift what did we drop, how far did we move
+```
 
 ---
 
-## Performance Benchmarks
-
-### Comparative Analysis
-
-```mermaid
-xychart-beta
-    title "Token Efficiency vs Semantic Coherence"
-    x-axis ["Naive Buffer", "Vector Recall", "Context Handover"]
-    y-axis "Score (0-10)" 0 --> 10
-    bar [3, 6, 9]
-    line [3, 6, 9]
-```
-
-### Detailed Metrics
-
-<div align="center">
-
-| Metric | Naive Buffer | Vector Recall | **Context Handover** |
-|:---|:---:|:---:|:---:|
-| **Token Efficiency** | Low ⚠️ | Medium | **High** 🎯 |
-| **Semantic Coherence** | Low ⚠️ | Medium | **High** 🎯 |
-| **Latency Overhead** | None ✅ | High ~200ms ⚠️ | **Low ~40ms** ⚡ |
-| **Auditability** | None ❌ | Low ⚠️ | **Full** ✅ |
-
-</div>
-
----
-
-## Ecosystem Integration
-
-Works seamlessly with your existing stack:
-
-<div align="center">
-
-```mermaid
-flowchart LR
-    A[Context Handover] --> B[LangChain]
-    A --> C[LlamaIndex]
-    A --> D[AutoGen]
-    A --> E[LangGraph]
-    A --> F[OpenTelemetry]
-    A --> G[Langfuse]
-    
-    style A fill:#4CAF50,color:white
-    style B fill:#2196F3,color:white
-    style C fill:#FF9800,color:white
-    style D fill:#9C27B0,color:white
-    style E fill:#FF5722,color:white
-    style F fill:#00BCD4,color:white
-    style G fill:#E91E63,color:white
-```
-
-</div>
-
-### Integration Examples
-
-| Framework | Integration Type | Status |
-|:---|:---|:---:|
-| **LangChain** | Custom Memory Module | ✅ Ready |
-| **LlamaIndex** | Node Parser | ✅ Ready |
-| **AutoGen/LangGraph** | State Handover | ✅ Ready |
-| **OpenTelemetry** | Native Tracing | ✅ Ready |
-| **Langfuse** | Observability | ✅ Ready |
+## Use it as a library
 
 ```python
-# Example: LangChain Integration
-from langchain.memory import ConversationBufferMemory
-from context_handover.integrations.langchain import HandoverMemory
+from context_handover import ContextManager
 
-memory = HandoverMemory(session_id="langchain_01")
-memory.save_context({"input": "Hi"}, {"output": "Hello!"})
+manager = ContextManager(max_tokens=2000)
+manager.add_message("Decision: we'll use RS256 for signing tokens.")
+manager.add_message("Constraint: tokens expire after one hour.")
+
+package = manager.build_handover_package()
+print(package.to_context_string())
+print(package.total_tokens)
 ```
+
+The same object also exposes `compute_drift()`, `create_checkpoint(level)` and
+`handover_to_new_session()`.
 
 ---
 
-## Configuration
+## Command line
 
-Create a `config.yaml` to tune behavior:
-
-```yaml
-pipeline:
-  max_tokens: 4096
-  drift_threshold: 0.5
-  knapsack_strategy: "value_density" # or 'greedy'
-
-storage:
-  backend: "chromadb" # or 'qdrant', 'memory'
-  path: "./data/atoms"
-
-observability:
-  tracing: true
-  metrics_export: "otel"
-```
-
-### Configuration Options Overview
-
-<div align="center">
-
-| Category | Option | Default | Description |
-|:---|:---|:---:|:---|
-| **Pipeline** | `max_tokens` | 4096 | Maximum token budget for handover |
-| **Pipeline** | `drift_threshold` | 0.5 | Sensitivity for context drift detection |
-| **Pipeline** | `knapsack_strategy` | value_density | Optimization strategy |
-| **Storage** | `backend` | chromadb | Vector store backend |
-| **Storage** | `path` | ./data/atoms | Local storage path |
-| **Observability** | `tracing` | true | Enable distributed tracing |
-| **Observability** | `metrics_export` | otel | Metrics export format |
-
-</div>
-
----
-
-## Documentation & Resources
-
-<div align="center">
-
-### 📚 Complete User Guide
-
-The comprehensive guide to understanding and using Context Handover.
-
-**[Read the Full User Guide →](docs/USER_GUIDE.md)** 🐱
-
-</div>
-
-The User Guide includes:
-- ✅ 5-minute quick start walkthrough
-- ✅ Deep dive into Semantic Atoms lifecycle  
-- ✅ Architecture diagrams explained
-- ✅ Advanced tuning for Drift & Budgets
-- ✅ Visualization dashboard guide with visualizations
-- ✅ API reference
-- ✅ Troubleshooting and best practices
-- ✅ Real-world examples
-
-<div align="center">
-
-### 💻 Code Examples
-
-Ready-to-run code snippets for common use cases.
+The plugin is drivable without an agent, which is also how you debug it:
 
 ```bash
-# Run the demo
-python examples/run_demo.py
-
-# Run benchmark suite
-python examples/benchmark.py
+relay status
+relay remember decision "Use RS256 for signing tokens"
+relay atoms --kind constraint
+relay handover --max-tokens 800
+relay losses
+relay drift
+relay new-session
+relay capture notes.md
+relay mcp
 ```
 
-</div>
+`relay handover` prints the block on stdout and the accounting on stderr, so it
+composes with a pipe.
 
 ---
 
-## Contributing
+## How it works
 
-We welcome contributions! Check out our [Improvement Plan](IMPROVEMENT_PLAN.md) for open tasks.
-
-### How to Contribute
-
-```mermaid
-graph LR
-    A[Fork Repo] --> B[Create Branch]
-    B --> C[Make Changes]
-    C --> D[Commit]
-    D --> E[Push]
-    E --> F[Open PR]
-    
-    style A fill:#4CAF50,color:white
-    style B fill:#2196F3,color:white
-    style C fill:#FF9800,color:white
-    style D fill:#9C27B0,color:white
-    style E fill:#00BCD4,color:white
-    style F fill:#E91E63,color:white
+```text
+messages ──▶ extract ──▶ atoms ──▶ pack under budget ──▶ context block
+                            │                              │
+                            │                              ├── dropped list
+                            └────────── drift ◀────────────┘
 ```
 
-### Development Setup
+Four modules, one direction:
+
+| Module | Owns |
+|---|---|
+| `extraction/extraction.py` | text → typed candidates, LLM first, regex fallback |
+| `core/atoms.py`, `core/registry.py` | the atom model, dedupe by canonical form |
+| `core/budget.py` | 0/1 knapsack, mandatory atoms, `HandoverPackage` |
+| `measurement/` | drift, loss ledger, integrity checks |
+| `mcp/` | the store, the server, the tools |
+
+`core/budget.py` imports nothing from the rest of the project, so the packer can
+be read and tested on its own.
+
+---
+
+## Numbers worth knowing
+
+- **Budget.** The token budget is the only real number. A 2,000-token handover
+  carries about 74 average atoms, because each atom costs its own tokens plus
+  15 for the `- [type] ` prefix. The reported total includes that overhead, so
+  it is comparable to the budget.
+- **Packing cost.** `O(n · W)` time and memory for the decision table, where `W`
+  is the budget. At n=50, W=4096 that is 200k cells, about 30 ms in CPython.
+- **Packing quality.** Before the reconstruction fix the packer captured 52%,
+  35% and 20% of the achievable value at n=12/20/50 while filling only 45%, 27%
+  and 12% of the budget. It now captures 100% and fills 95%, 98%, 93%. The
+  remainder is granularity: atoms do not divide to fill a budget exactly.
+- **Drift thresholds.** composite < 0.10 EXCELLENT, < 0.25 GOOD, < 0.45
+  WARNING, above that CRITICAL.
+
+---
+
+## Tests
 
 ```bash
-# Install dependencies
-poetry install
-
-# Install pre-commit hooks
-pre-commit install
-
-# Run tests
-pytest tests/ -v
+python -m pytest -q          # 73 passed
+python scripts/repro_knapsack.py   # oracle check: 100% of optimum
+python scripts/mcp_smoke.py        # spawns the server over stdio and drives it
 ```
 
-<div align="center">
-
-| Step | Command | Purpose |
-|:---|:---|:---|
-| **1** | `poetry install` | Install all dependencies |
-| **2** | `pre-commit install` | Set up git hooks |
-| **3** | `pytest tests/ -v` | Run test suite |
-
-</div>
+The suite covers the atom model, dedupe, the packer against a brute-force
+oracle, the store, and every MCP tool.
 
 ---
 
-## License
+## Layout
 
-MIT License - see [LICENSE](LICENSE) for details.
+```text
+src/context_handover/
+├── core/          atoms, registry, budget, checkpoints
+├── extraction/    LLM extraction + regex fallback
+├── measurement/   drift, ledger, verification
+├── pipeline/      orchestration, retries, trace context
+├── storage/       chroma / qdrant / memory backends
+├── mcp/           store + server + tools   ← the plugin
+└── cli.py         relay status | handover | losses | ...
+```
 
----
-
-<div align="center">
-
-**Built with ❤️ for the future of agentic memory.** 🐱
-
-</div>
+MIT.

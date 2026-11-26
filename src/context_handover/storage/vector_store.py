@@ -404,7 +404,10 @@ def create_backend(
     Factory function to create vector store backend.
     
     Args:
-        backend_type: One of 'chroma', 'qdrant', 'memory'
+        backend_type: One of 'chroma', 'qdrant', 'memory'. The persistent
+            backends need an optional dependency; when it is missing this falls
+            back to the in-memory backend with a warning, so importing the
+            library never requires a database.
         **kwargs: Backend-specific arguments
     
     Returns:
@@ -422,4 +425,16 @@ def create_backend(
             f"Available: {list(backends.keys())}"
         )
     
-    return backends[backend_type](**kwargs)
+    try:
+        return backends[backend_type](**kwargs)
+    except ImportError as exc:
+        if backend_type == "memory":
+            raise
+        logger.warning(
+            "%s backend unavailable (%s); using the in-memory backend. "
+            "Install it with: pip install 'context-handover[%s]'",
+            backend_type,
+            exc,
+            backend_type,
+        )
+        return InMemoryBackend()
