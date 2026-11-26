@@ -12,7 +12,7 @@ try:
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
-    logger.warning("opentelemetry not available")
+    logger.debug("opentelemetry not installed - instrumentation disabled")
 
 # The Jaeger exporter is optional and deprecated upstream. Keeping it in its own
 # guard means a broken exporter cannot disable tracing altogether.

@@ -16,7 +16,7 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
-    logger.warning("redis not available - using asyncio.Queue only")
+    logger.debug("redis not installed - using asyncio.Queue only")
 
 from .retry_policy import (
     RetryPolicy,

@@ -9,7 +9,7 @@ try:
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LANGFUSE_AVAILABLE = False
-    logger.warning("Langfuse not installed")
+    logger.debug("Langfuse not installed - tracing disabled")
 
 
 class ContextHandoverObserver:
